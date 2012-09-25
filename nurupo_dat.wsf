@@ -1,0 +1,279 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<package>
+  <job>
+    <runtime></runtime>
+    <script language="VBScript">
+    <![CDATA[
+option explicit
+
+const DEBUG_FLG = False
+
+'引数URL(スレURL)をDATのURLに変換する
+function transThreadUrlToDat(byval url, byref datName)
+  dim arrHttp
+  dim arrUri
+  dim i
+  dim strRslt
+  
+  arrHttp = split(url, "//")      'http:とserver.name/location/to/threadを分離
+  arrUri = split(arrHttp(1), "/") 'server.name/location/to/threadを分離
+  
+  'pre  trans: http://SERVER.NAME/test/read.cgi/BBS/THREAD
+  'post trans: http://SERVER.NAME/BBS/dat/THREAD.dat
+  datName = arruri(4)
+  strRslt = arrHttp(0) & "//" & arruri(0) & "/" & arruri(3) & "/dat/" & datName & ".dat"
+  
+  transThreadUrlToDat = strRslt
+end function
+
+'引数URLからファイルをダウンロードして、引数(フルパス)ファイルとして保存する
+'DATでも画像でも使える汎用関数
+function downloadFile(url, file)
+  dim objSrvHttp
+  dim stream
+  
+  downloadFile = False
+  
+  Set objSrvHttp = Wscript.CreateObject("Msxml2.ServerXMLHTTP")
+  
+  if DEBUG_FLG then
+    wscript.echo file & " : download file => " & url
+  end if
+  
+  on error resume next
+  Call objSrvHTTP.Open("GET", url, False)
+  if Err.Number <> 0 then
+    Wscript.Echo Err.Description
+    exit function
+  end if
+  
+  if DEBUG_FLG then
+    wscript.echo file & " : before send"
+  end if
+  
+  objSrvHTTP.Send
+  if Err.Number <> 0 then
+    'おそらくサーバーの指定が間違っている
+    Wscript.Echo Err.Description
+    exit function
+  end if
+  on error goto 0
+  
+  if objSrvHTTP.status = 404 then
+    Wscript.Echo "URL が正しくありません(404)"
+    exit function
+  end if
+  
+  if DEBUG_FLG then
+    wscript.echo file & " : file save"
+  end if
+  
+  'バイナリデータ保存用オブジェクト
+  Set stream = Wscript.CreateObject("ADODB.Stream")
+  stream.Open
+  stream.Type = 1 'バイナリ
+  '戻されたバイナリをファイルとしてストリームに書き込み
+  stream.Write objSrvHTTP.responseBody
+  'ファイルとして保存
+  stream.SaveToFile file, 2
+  stream.Close
+  
+  set stream = Nothing
+  set objSrvHttp = Nothing
+  
+  downloadFile = True
+end function
+
+'引数DATファイルから一行ずつ読み込んで画像URL抽出関数を呼び出す
+'その際、抽出済の列は除外する
+' CSV最終行のレス番の次の行から処理を開始すればよい
+function readAndProcDatFile(datfile, datpath)
+  dim objfs
+  dim objfile
+  dim arrDat
+  dim arrTmp
+  dim strTmpFile
+  dim strarrtmp
+  dim str
+  dim i
+  dim j
+  dim init
+  dim objre
+  dim objmatch
+  dim objmatches
+  dim strmatch
+  
+  const read = 1
+  const add  = 8
+  const write = 2
+  const stFileName = "status.txt"
+  
+  readAndProcDatFile = False
+  
+  if DEBUG_FLG then
+    wscript.echo datfile & " : start proc datfile"
+  end if
+  
+  'ファイルシステムオブジェクトの生成
+  set objfs = CreateObject("Scripting.FileSystemObject")
+  
+  if not objfs.FileExists(datfile) then
+    '引数ファイルが存在しなかったら処理終了
+    exit function
+  end if
+  
+  'DATファイルオープン
+  set objfile = objfs.OpenTextFile(datfile, read)
+  '改行コードでSplit
+  arrDat = split(objfile.ReadAll, vbLf) 'DATファイルの改行コードはLF
+  '読んだらクローズ
+  objfile.close
+  
+  if DEBUG_FLG then
+    wscript.echo datfile & " : close datfile, start proc status file " & stFileName
+  end if
+  
+  'statusファイル処理(処理済レスのスキップ)
+  strTmpFile = objfs.BuildPath(datpath, stFileName)
+  if objfs.FileExists(strTmpFile) then
+    on error resume next
+    set objfile = objfs.OpenTextFile(strTmpFile, read)
+    if err.number = 0 then
+      arrTmp = split(objfile.ReadAll, vbLf)
+      'statusファイルの形式は、「レス番,副番,URL」
+      strarrtmp = split(arrTmp(UBound(arrTmp)-1), ",")
+      init = strarrtmp(0)
+      objfile.close 'ファイルクローズ(strTmpFile:read)
+    else
+      init = 0
+    end if
+    on error goto 0
+    
+    set objfile = objfs.OpenTextFile(strTmpFile, add)
+  else
+    init = 0
+    objfs.CreateTextFile strTmpFile
+    set objfile = objfs.OpenTextFile(strTmpFile, write)
+  end if
+  
+  if DEBUG_FLG then
+    wscript.echo stFileName & " : reopened writablly, init is " & Cstr(init)
+  end if
+  
+  set objre = new RegExp  'RegExpオブジェクト生成
+  objre.IgnoreCase = True '大文字小文字区別なし
+  objre.Global = True     '複数マッチON
+  objre.pattern = "h?ttp[^\s\<\>]*\.jpg"
+  'objre.pattern = "http[^\s\<\>]*"
+  'DATファイルの行単位で処理
+  for i = init to UBound(arrDat)
+    set objmatches = objre.execute(arrDat(i)) '正規表現検索実行
+    j = 0
+    for each objmatch in objmatches
+      str = (i+1) & "," & (j+1) & "," & objmatch.value
+      if DEBUG_FLG then
+        wscript.echo objmatch.value & " : start download"
+      end if
+      if left(objmatch.value, 1) = "t" then
+        strmatch = "h" & objmatch.value
+      else
+        strmatch = objmatch.value
+      end if
+      if downloadFile(strmatch, objfs.buildpath(datpath, (i+1) & "-" & (j+1) & ".jpg")) then
+        str = str & ",OK"
+      else
+        str = str & ",NG"
+      end if
+      objfile.WriteLine str 'CSVファイルにステータスを保存
+      j = j + 1
+      if DEBUG_FLG then
+        wscript.echo objmatch.value & " : finish download"
+      end if
+    next 'objmatch
+    
+  next 'i
+  
+  objfile.close 'ファイルクローズ(strTmpFile:add or write)
+  'ファイルシステムオブジェクトの破棄
+  set objfile = Nothing
+  set objfs = Nothing
+  readAndProcDatFile = True
+end function
+
+'引数のステータスファイルファイル(CSV)を読み込んでNGのものについて、パスに画像をダウンロードする
+function downloadPictures(statusfile, contentpath)
+end function
+
+
+'==============================================================================
+dim arg
+dim daturl
+dim threadId
+dim datfilepath
+dim strCurPath
+
+dim nowDate
+dim strDate
+
+dim objFileSys
+
+'====== 実行年月日を取得(datファイル、画像置き場のため) ======
+nowDate = Now()
+strDate = Year(nowDate) & Right("0" & Month(nowDate), 2) & Right("0" & Day(nowDate), 2)
+
+'====== 引数処理 ======
+if wscript.arguments.count = 0 then
+  wscript.echo "getPictures.vbs "
+  wscript.echo "  2chのスレッドURLを受け取って、"
+  wscript.echo "  レスに含まれる画像ファイルを全てダウンロードするスクリプト"
+  wscript.echo "USAGE : getPictures.vbs THREAD_URL"
+  wscript.echo "ex) > getPictures.vbs http://hayabusa.2ch.net/test/read.cgi/news4vip/1234567890/"
+  wscript.quit 0
+else
+  arg = wscript.arguments(0)
+end if
+
+'====== スレのURLからDATファイルのURLに変換
+daturl = transThreadUrlToDat(arg, threadId)
+if DEBUG_FLG then
+  wscript.echo "1 : " & daturl
+  wscript.echo "2 : " & threadId
+end if
+
+'====== 実行モジュールのカレントパス取得(カレントパスにフォルダを作成、その中に色々保存する) ======
+strCurPath = Replace(WScript.ScriptFullName,WScript.ScriptName,"")
+if DEBUG_FLG then
+  wscript.echo "3 : " & strCurPath
+end if
+
+'====== ファイルシステムオブジェクト生成 ======
+Set objFileSys = CreateObject("Scripting.FileSystemObject")
+
+'====== ローカルに保存するDATファイルのフルパス生成 ======
+datfilepath = objFileSys.BuildPath(strCurPath,threadId)
+if DEBUG_FLG then
+  wscript.echo "4 : " & datfilepath
+end if
+
+'====== スレッドIDフォルダが無ければ作成 ======
+if not objFileSys.FolderExists(datfilepath) then
+  objFileSys.CreateFolder datfilepath
+end if
+
+'====== ダウンロード実行 ======
+if not downloadFile(daturl, objFileSys.BuildPath(datfilepath,threadId & ".dat")) then
+  wscript.echo "ダウンロードは失敗しました"
+end if
+
+'====== DATファイル処理 =======
+if not readAndProcDatFile(objFileSys.BuildPath(datfilepath,threadId & ".dat"), datfilepath) then
+  wscript.echo "DATファイル処理に失敗しました"
+end if
+
+'====== ファイルシステムオブジェクト破棄 ======
+set objFileSys = Nothing
+
+    ]]>
+    </script>
+  </job>
+</package>
